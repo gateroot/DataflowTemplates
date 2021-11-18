@@ -17,25 +17,39 @@ package com.google.cloud.teleport.templates.common;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.auto.value.AutoValue;
 import com.google.cloud.teleport.values.FailsafeElement;
 import com.google.common.base.Strings;
 import com.google.common.base.Throwables;
 import com.google.common.io.CharStreams;
+import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.UncheckedIOException;
 import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import javax.annotation.Nullable;
 import javax.script.Invocable;
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
 import javax.script.ScriptException;
 import jdk.nashorn.api.scripting.ScriptObjectMirror;
+import org.apache.beam.sdk.io.FileIO;
+import org.apache.beam.sdk.io.FileIO.ReadableFile;
 import org.apache.beam.sdk.io.FileSystems;
 import org.apache.beam.sdk.io.fs.MatchResult;
 import org.apache.beam.sdk.io.fs.MatchResult.Metadata;
@@ -47,21 +61,28 @@ import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
+import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
+import org.apache.commons.io.IOUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** A Text UDF Transform Function. Note that this class's implementation is not threadsafe */
+/**
+ * A Text UDF Transform Function. Note that this class's implementation is not threadsafe
+ */
 @AutoValue
 public abstract class JavascriptTextTransformer {
 
   private static final Logger LOG = LoggerFactory.getLogger(JavascriptTextTransformer.class);
 
-  /** Necessary CLI options for running UDF function. */
+  /**
+   * Necessary CLI options for running UDF function.
+   */
   public interface JavascriptTextTransformerOptions extends PipelineOptions {
+
     // "Required" annotation is added as a workaround for BEAM-7983.
     @Validation.Required
     @Description("Gcs path to javascript udf source")
@@ -83,6 +104,7 @@ public abstract class JavascriptTextTransformer {
    */
   @AutoValue
   public abstract static class JavascriptRuntime {
+
     @Nullable
     public abstract String fileSystemPath();
 
@@ -91,9 +113,12 @@ public abstract class JavascriptTextTransformer {
 
     private Invocable invocable;
 
-    /** Builder for {@link JavascriptTextTransformer}. */
+    /**
+     * Builder for {@link JavascriptTextTransformer}.
+     */
     @AutoValue.Builder
     public abstract static class Builder {
+
       public abstract Builder setFileSystemPath(@Nullable String fileSystemPath);
 
       public abstract Builder setFunctionName(@Nullable String functionName);
@@ -206,17 +231,25 @@ public abstract class JavascriptTextTransformer {
     }
   }
 
-  /** Transforms Text Strings via a Javascript UDF. */
+  /**
+   * Transforms Text Strings via a Javascript UDF.
+   */
   @AutoValue
   public abstract static class TransformTextViaJavascript
-      extends PTransform<PCollection<String>, PCollection<String>> {
-    public abstract @Nullable ValueProvider<String> fileSystemPath();
+      extends PTransform<PCollection<FileIO.ReadableFile>, PCollection<KV<String, String>>> {
 
-    public abstract @Nullable ValueProvider<String> functionName();
+    public abstract @Nullable
+    ValueProvider<String> fileSystemPath();
 
-    /** Builder for {@link TransformTextViaJavascript}. */
+    public abstract @Nullable
+    ValueProvider<String> functionName();
+
+    /**
+     * Builder for {@link TransformTextViaJavascript}.
+     */
     @AutoValue.Builder
     public abstract static class Builder {
+
       public abstract Builder setFileSystemPath(@Nullable ValueProvider<String> fileSystemPath);
 
       public abstract Builder setFunctionName(@Nullable ValueProvider<String> functionName);
@@ -229,10 +262,10 @@ public abstract class JavascriptTextTransformer {
     }
 
     @Override
-    public PCollection<String> expand(PCollection<String> strings) {
-      return strings.apply(
+    public PCollection<KV<String, String>> expand(PCollection<ReadableFile> files) {
+      return files.apply(
           ParDo.of(
-              new DoFn<String, String>() {
+              new DoFn<ReadableFile, KV<String, String>>() {
                 private JavascriptRuntime javascriptRuntime;
 
                 @Setup
@@ -246,14 +279,36 @@ public abstract class JavascriptTextTransformer {
                 @ProcessElement
                 public void processElement(ProcessContext c)
                     throws IOException, NoSuchMethodException, ScriptException {
-                  String element = c.element();
+                  FileIO.ReadableFile file = c.element();
+                  // ファイル名を抽出する（拡張子を除く）
+                  String fullPath = file.getMetadata().resourceId().toString();
+                  Pattern p = Pattern.compile("^.*/(?<name>.*\\..*$)");
+                  Matcher m = p.matcher(fullPath);
+                  m.find();
 
+                  // 圧縮ファイルをワーカーのファイルシステムに書き込む
+                  Path tempDir = Files.createTempDirectory("");
+                  Path filePath = Paths.get(tempDir.toString(), m.group("name"));
+                  FileOutputStream fos = new FileOutputStream(
+                      filePath.toString());
+                  BufferedOutputStream bos = new BufferedOutputStream(fos);
+                  bos.write(file.readFullyAsBytes());
+                  bos.flush();
+                  bos.close();
+
+                  String result = null;
                   if (javascriptRuntime != null) {
-                    element = javascriptRuntime.invoke(element);
+                    result = javascriptRuntime.invoke(filePath.toString());
                   }
 
-                  if (!Strings.isNullOrEmpty(element)) {
-                    c.output(element);
+                  if (!Strings.isNullOrEmpty(result)) {
+                    ObjectMapper mapper = new ObjectMapper();
+                    String[] xmls = mapper.readValue(result, String[].class);
+                    for (String xml : xmls) {
+                      FileInputStream fis = new FileInputStream(xml);
+                      String content = IOUtils.toString(fis, StandardCharsets.UTF_8);
+                      c.output(KV.of(xml, content));
+                    }
                   }
                 }
               }));
@@ -268,11 +323,15 @@ public abstract class JavascriptTextTransformer {
   @AutoValue
   public abstract static class FailsafeJavascriptUdf<T>
       extends PTransform<PCollection<FailsafeElement<T, String>>, PCollectionTuple> {
-    public abstract @Nullable ValueProvider<String> fileSystemPath();
 
-    public abstract @Nullable ValueProvider<String> functionName();
+    public abstract @Nullable
+    ValueProvider<String> fileSystemPath();
 
-    public abstract @Nullable ValueProvider<Boolean> loggingEnabled();
+    public abstract @Nullable
+    ValueProvider<String> functionName();
+
+    public abstract @Nullable
+    ValueProvider<Boolean> loggingEnabled();
 
     public abstract TupleTag<FailsafeElement<T, String>> successTag();
 
@@ -282,9 +341,12 @@ public abstract class JavascriptTextTransformer {
       return new AutoValue_JavascriptTextTransformer_FailsafeJavascriptUdf.Builder<>();
     }
 
-    /** Builder for {@link FailsafeJavascriptUdf}. */
+    /**
+     * Builder for {@link FailsafeJavascriptUdf}.
+     */
     @AutoValue.Builder
     public abstract static class Builder<T> {
+
       public abstract Builder<T> setFileSystemPath(@Nullable ValueProvider<String> fileSystemPath);
 
       public abstract Builder<T> setFunctionName(@Nullable ValueProvider<String> functionName);
@@ -367,7 +429,7 @@ public abstract class JavascriptTextTransformer {
    * null indicating that a runtime was unable to be created within the given parameters.
    *
    * @param fileSystemPath The file path to the JavaScript file to execute.
-   * @param functionName The function name which will be invoked within the JavaScript script.
+   * @param functionName   The function name which will be invoked within the JavaScript script.
    * @return The {@link JavascriptRuntime} instance.
    */
   private static JavascriptRuntime getJavascriptRuntime(

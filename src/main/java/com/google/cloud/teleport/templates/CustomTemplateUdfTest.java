@@ -27,8 +27,11 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.apache.beam.runners.dataflow.options.DataflowPipelineOptions;
 import org.apache.beam.sdk.Pipeline;
+import org.apache.beam.sdk.coders.StringUtf8Coder;
+import org.apache.beam.sdk.io.Compression;
 import org.apache.beam.sdk.io.FileIO;
 import org.apache.beam.sdk.io.FileIO.ReadableFile;
+import org.apache.beam.sdk.io.FileIO.Write.FileNaming;
 import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.CreateDisposition;
@@ -38,9 +41,14 @@ import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.options.Validation;
 import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.options.ValueProvider.NestedValueProvider;
+import org.apache.beam.sdk.transforms.Contextful;
 import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.SerializableFunction;
+import org.apache.beam.sdk.values.KV;
+import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.POutput;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.slf4j.Logger;
@@ -78,22 +86,9 @@ public class CustomTemplateUdfTest {
   private static final String TYPE = "type";
   private static final String MODE = "mode";
 
-  static class GetFilePath extends DoFn<ReadableFile, String> {
+  static class WriteFile extends DoFn<String, byte[]> {
     @ProcessElement
     public void processElement(ProcessContext context) throws Exception {
-      FileIO.ReadableFile file = context.element();
-      // ファイル名を抽出する（拡張子を除く）
-      String fullPath = file.getMetadata().resourceId().toString();
-      Pattern p = Pattern.compile("^.*/(?<name>.*)\\..*$");
-      Matcher m = p.matcher(fullPath);
-      m.find();
-      JSONObject json = new JSONObject();
-      json.put("name", m.group("name"));
-      json.put("data", file.readFullyAsBytes());
-      String tmpDir = Files.createTempDirectory("tmp").toAbsolutePath().toString();
-      json.put("dir", tmpDir);
-      LOG.info(json.toString());
-      context.output(json.toString());
     }
   }
 
@@ -103,14 +98,20 @@ public class CustomTemplateUdfTest {
 
     pipeline
         .apply(FileIO.match().filepattern(options.getInputFilePattern()))
-        .apply(FileIO.readMatches())
-        .apply(ParDo.of(new GetFilePath()))
+        .apply(FileIO.readMatches().withCompression(Compression.UNCOMPRESSED))
         .apply(
             TransformTextViaJavascript.newBuilder()
                 .setFileSystemPath(options.getJavascriptTextTransformGcsPath())
                 .setFunctionName(options.getJavascriptTextTransformFunctionName())
                 .build())
-        .apply(TextIO.write().to("gs://nims-tdm-dataflow-test/output.txt"));
+        .apply(
+            FileIO.<String, KV<String, String>>writeDynamic()
+                .by(KV::getKey)
+                .via(Contextful.fn(KV::getValue), TextIO.sink())
+                .withDestinationCoder(StringUtf8Coder.of())
+                .withNaming(name -> FileIO.Write.defaultNaming(name, ""))
+                .to("gs://nims-tdm-dataflow-test/data/")
+        );
 
     pipeline.run();
   }
