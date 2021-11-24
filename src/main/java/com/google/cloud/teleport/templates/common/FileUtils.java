@@ -12,7 +12,7 @@ public class FileUtils {
   private static final Logger LOG = LoggerFactory.getLogger(FileUtils.class);
 
   public static List<String> getXmlFiles(Path start) {
-    XmlFileVisitor visitor = new XmlFileVisitor();
+    FileVisitor visitor = new FileVisitor();
     try {
       Files.walkFileTree(start, visitor);
     } catch (IOException e) {

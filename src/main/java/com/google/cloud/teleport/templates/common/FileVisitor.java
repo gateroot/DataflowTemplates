@@ -8,14 +8,12 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 
-public class XmlFileVisitor extends SimpleFileVisitor<Path> {
+public class FileVisitor extends SimpleFileVisitor<Path> {
   public List<Path> paths = new ArrayList<>();
 
   @Override
   public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-    if (file.toString().endsWith(".xml")) {
-      paths.add(file);
-    }
+    paths.add(file);
     return FileVisitResult.CONTINUE;
   }
 

@@ -110,7 +110,7 @@ public class CustomTemplateUdfTest {
                         });
                   }
                 })
-                .to("gs://nims-tdm-dataflow-test/data/")
+                .to("gs://int-ca-nims-tdm-poc-dataflow/output/")
         );
 
     pipeline.run();

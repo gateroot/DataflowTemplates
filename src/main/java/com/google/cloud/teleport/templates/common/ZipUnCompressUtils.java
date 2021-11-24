@@ -71,6 +71,7 @@ public class ZipUnCompressUtils {
           while ((readSize = in.read(buffer)) != -1) {
             out.write(buffer, 0, readSize);
           }
+
           // クローズ
           try {
             out.close();
@@ -79,6 +80,11 @@ public class ZipUnCompressUtils {
           try {
             in.close();
           } catch (Exception e) {
+          }
+
+          if (zipEntry.getName().endsWith(".zip")) {
+            // Zip解凍
+            unzip(outFile.getAbsolutePath(), unzipFile.getAbsolutePath());
           }
         }
       }
