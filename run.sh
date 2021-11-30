@@ -1,9 +1,10 @@
 #!/bin/bash
 
 gcloud dataflow jobs run udf-test \
-    --gcs-location gs://nims-tdm-dataflow-test/templates/udf-test.json \
+    --project int-ca-nims-tdm-poc \
+    --gcs-location gs://int-ca-nims-tdm-poc-dataflow/dataflow/templates/udf-test.json\
     --region asia-northeast1 \
     --parameters \
 javascriptTextTransformFunctionName=transform,\
-javascriptTextTransformGcsPath=gs://nims-tdm-dataflow-test/udf.js,\
-inputFilePattern=gs://nims-tdm-dataflow-test/data/\*.xml
+javascriptTextTransformGcsPath=gs://int-ca-nims-tdm-poc-dataflow/udf/udf.js,\
+inputFilePattern=gs://int-ca-nims-tdm-poc-dataflow/source/\*.zip
